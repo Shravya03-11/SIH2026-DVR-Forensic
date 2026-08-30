@@ -1,0 +1,45 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Large video files (add test videos locally, don't commit them)
+*.mp4
+*.avi
+*.dav
+*.mkv
+*.mov
+*.h264
+*.h265
+
+# Output files (generated locally)
+outputs/*.pdf
+outputs/*.png
+outputs/*.jpg
+outputs/*.csv
+
+# AI model weights (downloaded automatically)
+*.pt
+*.onnx
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.suo
+*.user
+
+# Logs
+*.log

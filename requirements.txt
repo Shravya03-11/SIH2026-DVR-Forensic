@@ -1,10 +1,10 @@
-streamlit==1.39.0
-opencv-python-headless==4.10.0.84
-moviepy==1.0.3
-fpdf2==2.8.1
-pandas==2.2.3
-plotly==5.24.1
-ultralytics==8.3.0
-Pillow==10.4.0
-numpy==1.26.4
-python-dateutil==2.9.0
+streamlit>=1.35.0
+opencv-python-headless>=4.8.0
+fpdf2>=2.8.0
+pandas>=2.0.0
+plotly>=5.18.0
+ultralytics>=8.0.0
+Pillow>=10.0.0
+numpy>=1.24.0,<2.0        # <2.0 required — torch/ultralytics not yet compatible with numpy 2.x
+python-dateutil>=2.8.0
+moviepy>=1.0.3

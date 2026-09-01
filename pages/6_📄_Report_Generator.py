@@ -9,169 +9,372 @@ YOUR TASKS:
   [ ] Add an "Email Report" placeholder button
 """
 
-import streamlit as st
 import datetime
 import os
+import re
+from pathlib import Path
 
-st.set_page_config(page_title="Report Generator | DVR Forensic", page_icon="📄", layout="wide")
+import pandas as pd
+import streamlit as st
 
-st.title("📄 Forensic Report Generator")
-st.markdown("Compile all analysis results into a professionally formatted, court-admissible forensic PDF report.")
-st.divider()
+from utils.pdf_report import generate_report
 
-# ── Data Readiness Check ──────────────────────────────────────────────────────
-st.subheader("📋 Analysis Completeness Check")
-st.caption("Complete all modules before generating the report for the best results.")
+st.set_page_config(
+    page_title="Report Generator | DVR Forensic",
+    page_icon="📄",
+    layout="wide",
+)
 
-checks = {
-    "🔍 Device Detection":    bool(st.session_state.get("device_info")),
-    "🔒 Acquisition (Hashes)":bool(st.session_state.get("hashes")),
-    "📋 Metadata Extracted":  bool(st.session_state.get("metadata")),
-    "🗂️ Recovery Scan":       bool(st.session_state.get("recovered_files")),
-    "🤖 AI Detection":        bool(st.session_state.get("detections")),
-}
+OUTPUT_DIR = Path("outputs")
+OUTPUT_DIR.mkdir(exist_ok=True)
 
-cols = st.columns(5)
-for i, (label, done) in enumerate(checks.items()):
-    with cols[i]:
-        if done:
-            st.success(f"{label}\n✅ Done")
-        else:
-            st.warning(f"{label}\n⚠️ Not run")
 
-completed = sum(checks.values())
-st.progress(completed / len(checks))
-st.caption(f"{completed}/{len(checks)} modules completed. You can still generate a report — missing sections will show placeholders.")
+def safe_filename(value: str) -> str:
+    """Create a safe filename from a case ID."""
+    cleaned = re.sub(r"[^A-Za-z0-9_-]+", "_", value.strip())
+    return cleaned or "UNSPECIFIED_CASE"
 
-st.divider()
 
-# ── Case Information Form ─────────────────────────────────────────────────────
-st.subheader("📝 Case Details")
+def has_data(value) -> bool:
+    """Check whether a session-state value contains useful data."""
+    if value is None:
+        return False
+    if isinstance(value, (dict, list, tuple, set, str)):
+        return len(value) > 0
+    return bool(value)
 
-with st.form("report_form"):
-    col1, col2 = st.columns(2)
 
-    with col1:
-        case_id     = st.text_input("Case / FIR Number",   value=st.session_state.get("case_id", "FIR-2024-001"))
-        officer     = st.text_input("Investigating Officer", value=st.session_state.get("officer", "Insp. Sharma"))
-        department  = st.text_input("Department / Unit",    value="Cyber Crime Division")
-        location    = st.text_input("Crime Location",       value="New Delhi")
-
-    with col2:
-        incident_date = st.date_input("Incident Date",     value=datetime.date(2024, 8, 15))
-        report_date   = st.date_input("Report Date",       value=datetime.date.today())
-        priority      = st.selectbox("Priority",           ["🔴 High", "🟡 Medium", "🟢 Low"])
-        classification = st.selectbox("Classification",    ["CONFIDENTIAL", "RESTRICTED", "INTERNAL"])
-
-    notes = st.text_area("Additional Notes / Observations", height=100,
-                         placeholder="Add any relevant observations about the evidence...")
-
-    submitted = st.form_submit_button("🚀 Generate Forensic Report", type="primary")
-
-# ── Generate Report ───────────────────────────────────────────────────────────
-if submitted:
-
-    st.session_state.case_id = case_id
-    st.session_state.officer = officer
-
-    with st.spinner("📄 Generating forensic report..."):
-        import time
-        time.sleep(1.5)
-
-        from utils.pdf_report import generate_report
-
-        case_info = {
-            "Case ID":          case_id,
-            "Incident Date":    str(incident_date),
-            "Report Date":      str(report_date),
-            "Investigating Officer": officer,
-            "Department":       department,
-            "Crime Location":   location,
-            "Priority":         priority,
-            "Classification":   classification,
-            "Notes":            notes or "None",
-        }
-
-        pdf_bytes = generate_report(
-            case_info   = case_info,
-            device_info = st.session_state.get("device_info",   {}),
-            hashes      = st.session_state.get("hashes",        {}),
-            metadata    = st.session_state.get("metadata",      {}),
-            detections  = st.session_state.get("detections",    []),
-            recovered   = st.session_state.get("recovered_files", []),
-        )
-
-    # Save locally
-    os.makedirs("outputs", exist_ok=True)
-    filename    = f"Forensic_Report_{case_id}_{datetime.date.today()}.pdf"
-    output_path = os.path.join("outputs", filename)
-    with open(output_path, "wb") as f:
-        f.write(pdf_bytes)
-
-    st.success("✅ Forensic report generated successfully!")
-    st.balloons()
-
-    # ── Report Summary ────────────────────────────────────────────────
-    st.divider()
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Case ID",    case_id)
-    col2.metric("Officer",    officer)
-    col3.metric("Pages",      "~4–6")
-    col4.metric("Format",     "PDF")
-
-    # Report contents preview
-    st.subheader("📋 Report Contents")
-    sections = [
-        ("1", "Case Information",         "✅" if case_id else "⚠️"),
-        ("2", "Device Identification",    "✅" if st.session_state.get("device_info") else "⚠️ Placeholder"),
-        ("3", "Evidence Integrity Hashes","✅" if st.session_state.get("hashes") else "⚠️ Placeholder"),
-        ("4", "Video Metadata",           "✅" if st.session_state.get("metadata") else "⚠️ Placeholder"),
-        ("5", "AI Detection Results",     "✅" if st.session_state.get("detections") else "⚠️ Placeholder"),
-        ("6", "Recovered Files",          "✅" if st.session_state.get("recovered_files") else "⚠️ Placeholder"),
-        ("7", "Legal Declaration",        "✅ Always included"),
+def get_summary_rows():
+    """Build a report-readiness table from analysis modules."""
+    modules = [
+        ("Device Detection", "device_info", "DVR brand, model and device details"),
+        ("Acquisition & Hashing", "hashes", "MD5 and SHA-256 evidence integrity values"),
+        ("Metadata Parser", "metadata", "Video properties, timestamps and timeline"),
+        ("Recovery Simulator", "recovered_files", "Recovered/deleted footage entries"),
+        ("AI Analytics", "detections", "Detected people, vehicles and objects"),
     ]
 
-    for num, section, status in sections:
-        st.markdown(f"- **Section {num}:** {section} — {status}")
+    rows = []
+    for module, key, description in modules:
+        complete = has_data(st.session_state.get(key))
+        rows.append(
+            {
+                "Module": module,
+                "Status": "Complete" if complete else "Pending",
+                "Report contribution": description,
+            }
+        )
+    return rows
 
-    # ── Download Buttons ──────────────────────────────────────────────
-    st.divider()
-    col1, col2 = st.columns(2)
 
-    with col1:
-        st.download_button(
-            label    = "📥 Download PDF Report",
-            data     = pdf_bytes,
-            file_name= filename,
-            mime     = "application/pdf",
-            type     = "primary",
+def flatten_dict(data: dict) -> list[tuple[str, str]]:
+    """Prepare dictionaries for display."""
+    if not data:
+        return [("Status", "No data available")]
+
+    rows = []
+    for key, value in data.items():
+        if isinstance(value, (dict, list)):
+            value = str(value)
+        rows.append((str(key).replace("_", " ").title(), str(value)))
+    return rows
+
+
+# ── Header ────────────────────────────────────────────────────────────────────
+st.title("📄 Forensic Report Generator")
+st.caption(
+    "Create a structured digital-evidence report from device, acquisition, "
+    "metadata, recovery and AI-analysis findings."
+)
+
+summary_rows = get_summary_rows()
+completed = sum(row["Status"] == "Complete" for row in summary_rows)
+completion_rate = completed / len(summary_rows)
+
+top_left, top_mid, top_right = st.columns([1.4, 1, 1])
+
+with top_left:
+    st.progress(completion_rate, text=f"Evidence workflow completion: {completed}/5 modules")
+
+with top_mid:
+    st.metric("Evidence Sources", f"{completed}/5")
+
+with top_right:
+    label = "Ready to generate" if completed >= 3 else "Partial evidence available"
+    st.metric("Report Status", label)
+
+if completed < 5:
+    st.warning(
+        "Some analysis modules have not been completed. The PDF can still be generated, "
+        "but missing sections will be clearly marked as unavailable."
+    )
+else:
+    st.success("All analysis modules are complete. Your report will include the full evidence summary.")
+
+st.divider()
+
+tab_case, tab_preview, tab_history = st.tabs(
+    ["📝 Case Details", "👁️ Live Report Preview", "🗃️ Generated Reports"]
+)
+
+# ── Case details ──────────────────────────────────────────────────────────────
+with tab_case:
+    st.subheader("Case & Evidence Details")
+
+    with st.form("report_form", border=True):
+        left, right = st.columns(2)
+
+        with left:
+            case_id = st.text_input(
+                "Case / FIR Number *",
+                value=st.session_state.get("case_id", ""),
+                placeholder="Example: FIR-2026-001",
+            )
+            officer = st.text_input(
+                "Investigating Officer *",
+                value=st.session_state.get("officer", ""),
+                placeholder="Example: Insp. A. Sharma",
+            )
+            department = st.text_input(
+                "Department / Unit",
+                value=st.session_state.get("department", "Cyber Crime Division"),
+            )
+            location = st.text_input(
+                "Incident / Evidence Location",
+                value=st.session_state.get("location", ""),
+                placeholder="Example: Sector 18, Noida",
+            )
+
+        with right:
+            incident_date = st.date_input(
+                "Incident Date",
+                value=st.session_state.get("incident_date", datetime.date.today()),
+            )
+            report_date = st.date_input("Report Date", value=datetime.date.today())
+            priority = st.select_slider(
+                "Case Priority",
+                options=["Low", "Medium", "High", "Critical"],
+                value=st.session_state.get("priority", "Medium"),
+            )
+            classification = st.selectbox(
+                "Document Classification",
+                ["OFFICIAL USE ONLY", "RESTRICTED", "CONFIDENTIAL"],
+                index=1,
+            )
+
+        evidence_description = st.text_input(
+            "Evidence Description",
+            value=st.session_state.get(
+                "evidence_description",
+                "DVR/CCTV video footage submitted for forensic examination",
+            ),
         )
 
-    with col2:
-        st.info(f"✅ Also saved locally to:\n`outputs/{filename}`")
+        notes = st.text_area(
+            "Examiner Notes / Observations",
+            value=st.session_state.get("report_notes", ""),
+            height=130,
+            placeholder="Mention chain-of-custody notes, notable events, limitations, or observations.",
+        )
 
-    # TODO (Member 6): Add email functionality
-    st.button("📧 Email Report (Coming Soon)", disabled=True)
+        acknowledgement = st.checkbox(
+            "I confirm that the entered case information has been reviewed for accuracy."
+        )
 
-else:
-    # ── Instructions ──────────────────────────────────────────────────
-    st.info("""
-    **Instructions:**
-    1. First, run all modules in the sidebar (Device Detection → AI Analytics)
-    2. Fill in the case details above
-    3. Click **Generate Forensic Report**
-    4. Download the PDF — it's ready for court submission!
-    """)
+        submitted = st.form_submit_button(
+            "🚀 Generate Forensic PDF Report",
+            type="primary",
+            use_container_width=True,
+        )
 
-    st.markdown("#### 📄 What the report includes:")
-    st.markdown("""
-    | Section | Content |
-    |---------|---------|
-    | 1 | Case ID, Officer, Date, Location |
-    | 2 | DVR brand, model, file format |
-    | 3 | MD5 + SHA-256 hash values |
-    | 4 | Video duration, resolution, FPS |
-    | 5 | AI-detected objects and persons |
-    | 6 | Recovered deleted files list |
-    | 7 | Legal declaration + signature block |
-    """)
+    if submitted:
+        if not case_id.strip() or not officer.strip():
+            st.error("Please enter both the Case / FIR Number and Investigating Officer.")
+        elif not acknowledgement:
+            st.error("Please confirm that the case information has been reviewed.")
+        else:
+            # Save form state for the preview and later revisits.
+            st.session_state.update(
+                {
+                    "case_id": case_id.strip(),
+                    "officer": officer.strip(),
+                    "department": department.strip(),
+                    "location": location.strip(),
+                    "incident_date": incident_date,
+                    "priority": priority,
+                    "evidence_description": evidence_description.strip(),
+                    "report_notes": notes.strip(),
+                }
+            )
+
+            case_info = {
+                "Case ID": case_id.strip(),
+                "Investigating Officer": officer.strip(),
+                "Department": department.strip(),
+                "Incident Location": location.strip() or "Not specified",
+                "Incident Date": str(incident_date),
+                "Report Date": str(report_date),
+                "Priority": priority,
+                "Classification": classification,
+                "Evidence Description": evidence_description.strip() or "Not specified",
+                "Notes": notes.strip() or "No additional observations recorded.",
+                "Analysis Completion": f"{completed}/5 modules",
+            }
+
+            with st.spinner("Compiling evidence findings and generating the PDF..."):
+                pdf_bytes = generate_report(
+                    case_info=case_info,
+                    device_info=st.session_state.get("device_info", {}),
+                    hashes=st.session_state.get("hashes", {}),
+                    metadata=st.session_state.get("metadata", {}),
+                    detections=st.session_state.get("detections", []),
+                    recovered=st.session_state.get("recovered_files", []),
+                )
+
+            filename = (
+                f"Forensic_Report_{safe_filename(case_id)}_"
+                f"{datetime.date.today().isoformat()}.pdf"
+            )
+            output_path = OUTPUT_DIR / filename
+            output_path.write_bytes(pdf_bytes)
+
+          # Save report details so download remains available during this session
+            st.session_state["generated_pdf"] = pdf_bytes
+            st.session_state["generated_filename"] = filename
+
+# Used by the "Generated Report Centre" tab
+            st.session_state["latest_pdf"] = pdf_bytes
+            st.session_state["latest_pdf_name"] = filename
+            st.session_state["latest_output_path"] = str(output_path)
+
+            st.success("Forensic PDF report generated successfully and saved to outputs.")
+
+            confirmation_left, confirmation_right = st.columns([3, 1])
+
+            with confirmation_left:
+                st.info(
+                    f"Report reference: **{filename}**  \n"
+                    f"Case ID: **{case_id}**  \n"
+                    f"Generated on: **{datetime.datetime.now().strftime('%d %b %Y, %I:%M %p')}**"
+    )
+
+            with confirmation_right:
+                st.metric("Report Status", "Complete")
+
+            st.divider()
+            st.subheader("Report Download")
+
+            st.download_button(
+               label="📥 Download Forensic PDF Report",
+               data=st.session_state["generated_pdf"],
+               file_name=st.session_state["generated_filename"],
+               mime="application/pdf",
+               type="primary",
+               use_container_width=True,
+)
+# ── Interactive preview ───────────────────────────────────────────────────────
+with tab_preview:
+    st.subheader("Report Evidence Preview")
+    st.caption("This is the information currently available to the PDF generator.")
+
+    preview_left, preview_right = st.columns([1.1, 1])
+
+    with preview_left:
+        st.markdown("#### Analysis completeness")
+        readiness_df = pd.DataFrame(summary_rows)
+
+        def status_icon(status):
+            return "✅ Complete" if status == "Complete" else "⚠️ Pending"
+
+        readiness_df["Status"] = readiness_df["Status"].apply(status_icon)
+        st.dataframe(readiness_df, hide_index=True, use_container_width=True)
+
+        st.markdown("#### Integrity indicator")
+        hashes = st.session_state.get("hashes", {})
+        if has_data(hashes):
+            st.success("Hash values are available for evidence-integrity documentation.")
+            hash_rows = pd.DataFrame(flatten_dict(hashes), columns=["Algorithm / Field", "Value"])
+            st.dataframe(hash_rows, hide_index=True, use_container_width=True)
+        else:
+            st.error("No hashes found. Run Acquisition before final report submission.")
+
+    with preview_right:
+        st.markdown("#### Device findings")
+        device_df = pd.DataFrame(
+            flatten_dict(st.session_state.get("device_info", {})),
+            columns=["Field", "Value"],
+        )
+        st.dataframe(device_df, hide_index=True, use_container_width=True)
+
+        st.markdown("#### Video metadata")
+        metadata_df = pd.DataFrame(
+            flatten_dict(st.session_state.get("metadata", {})),
+            columns=["Field", "Value"],
+        )
+        st.dataframe(metadata_df, hide_index=True, use_container_width=True)
+
+    detection_data = st.session_state.get("detections", [])
+    recovered_data = st.session_state.get("recovered_files", [])
+
+    stat1, stat2, stat3 = st.columns(3)
+    stat1.metric("AI Findings", len(detection_data) if isinstance(detection_data, list) else 0)
+    stat2.metric("Recovered Items", len(recovered_data) if isinstance(recovered_data, list) else 0)
+    stat3.metric("Evidence Completeness", f"{int(completion_rate * 100)}%")
+
+    if has_data(detection_data):
+        with st.expander("🤖 AI Detection Results", expanded=False):
+            if isinstance(detection_data, list):
+                st.dataframe(pd.DataFrame(detection_data), use_container_width=True)
+            else:
+                st.write(detection_data)
+
+    if has_data(recovered_data):
+        with st.expander("🗂️ Recovery Results", expanded=False):
+            if isinstance(recovered_data, list):
+                st.dataframe(pd.DataFrame(recovered_data), use_container_width=True)
+            else:
+                st.write(recovered_data)
+
+# ── Generated PDFs ────────────────────────────────────────────────────────────
+with tab_history:
+    st.subheader("Generated Report Centre")
+
+    if st.session_state.get("latest_pdf"):
+        st.success(f"Latest report: {st.session_state['latest_pdf_name']}")
+
+        download_col, email_col = st.columns(2)
+
+        with download_col:
+            st.download_button(
+                "📥 Download Latest PDF",
+                data=st.session_state["latest_pdf"],
+                file_name=st.session_state["latest_pdf_name"],
+                mime="application/pdf",
+                type="primary",
+                use_container_width=True,
+            )
+
+        with email_col:
+            if st.button("📧 Email Report", use_container_width=True):
+                st.info(
+                    "Email integration placeholder: connect this button to an approved "
+                    "departmental SMTP/API service before deployment."
+                )
+
+    existing_reports = sorted(OUTPUT_DIR.glob("*.pdf"), key=lambda p: p.stat().st_mtime, reverse=True)
+
+    if existing_reports:
+        st.markdown("#### Saved PDF reports")
+        report_rows = [
+            {
+                "Filename": report.name,
+                "Generated": datetime.datetime.fromtimestamp(report.stat().st_mtime).strftime(
+                    "%d %b %Y, %I:%M %p"
+                ),
+                "Size (KB)": round(report.stat().st_size / 1024, 1),
+            }
+            for report in existing_reports
+        ]
+        st.dataframe(pd.DataFrame(report_rows), hide_index=True, use_container_width=True)
+    else:
+        st.info("No generated reports yet.")
